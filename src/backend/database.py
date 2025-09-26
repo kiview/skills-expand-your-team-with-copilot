@@ -1,15 +1,101 @@
 """
-MongoDB database configuration and setup for Mergington High School API
+Database configuration and setup for Mergington High School API
+Simple in-memory implementation for development/testing
 """
 
-from pymongo import MongoClient
 from argon2 import PasswordHasher
+import copy
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+# In-memory storage
+activities_data = {}
+teachers_data = {}
+
+# Mock collections for compatibility
+class MockCollection:
+    def __init__(self, data_store):
+        self.data_store = data_store
+    
+    def count_documents(self, query):
+        return len(self.data_store)
+    
+    def insert_one(self, document):
+        doc_id = document.pop('_id')
+        self.data_store[doc_id] = document
+        return None
+    
+    def find(self, query=None):
+        if query is None:
+            return [{'_id': k, **v} for k, v in self.data_store.items()]
+        # Simple query support for the use case
+        results = []
+        for doc_id, doc in self.data_store.items():
+            match = True
+            for key, value in query.items():
+                # Handle nested queries like 'schedule_details.days'
+                if '.' in key:
+                    keys = key.split('.')
+                    nested_value = doc
+                    try:
+                        for nested_key in keys:
+                            nested_value = nested_value[nested_key]
+                        if isinstance(value, dict) and '$in' in value:
+                            if not isinstance(nested_value, list):
+                                match = False
+                                break
+                            # Check if any value in the $in array is present in the nested_value list
+                            if not any(item in nested_value for item in value['$in']):
+                                match = False
+                                break
+                        elif isinstance(value, dict) and '$gte' in value:
+                            if nested_value < value['$gte']:
+                                match = False
+                                break
+                        elif isinstance(value, dict) and '$lte' in value:
+                            if nested_value > value['$lte']:
+                                match = False
+                                break
+                        elif nested_value != value:
+                            match = False
+                            break
+                    except (KeyError, TypeError):
+                        match = False
+                        break
+                elif key not in doc:
+                    match = False
+                    break
+                elif doc[key] != value:
+                    match = False
+                    break
+            if match:
+                results.append({'_id': doc_id, **doc})
+        return results
+    
+    def find_one(self, query):
+        results = self.find(query)
+        return results[0] if results else None
+    
+    def update_one(self, query, update):
+        results = self.find(query)
+        if results:
+            doc_id = results[0]['_id']
+            if '$push' in update:
+                for key, value in update['$push'].items():
+                    if key not in self.data_store[doc_id]:
+                        self.data_store[doc_id][key] = []
+                    self.data_store[doc_id][key].append(value)
+            if '$pull' in update:
+                for key, value in update['$pull'].items():
+                    if key in self.data_store[doc_id]:
+                        try:
+                            self.data_store[doc_id][key].remove(value)
+                        except ValueError:
+                            pass
+            return {'modified_count': 1}
+        return {'modified_count': 0}
+
+# Mock collections
+activities_collection = MockCollection(activities_data)
+teachers_collection = MockCollection(teachers_data)
 
 # Methods
 def hash_password(password):
@@ -163,6 +249,17 @@ initial_activities = {
         },
         "max_participants": 16,
         "participants": ["william@mergington.edu", "jacob@mergington.edu"]
+    },
+    "Manga Maniacs": {
+        "description": "Explore the fantastic stories of the most interesting characters from Japanese Manga (graphic novels)",
+        "schedule": "Tuesdays, 7:00 PM - 8:00 PM",
+        "schedule_details": {
+            "days": ["Tuesday"],
+            "start_time": "19:00",
+            "end_time": "20:00"
+        },
+        "max_participants": 15,
+        "participants": []
     }
 }
 
